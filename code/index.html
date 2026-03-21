@@ -36,10 +36,10 @@
             background: #d0dff0;
         }
         #rendertarget td.shipCell {
-            background: #5a7fa5;
+            background: #4caf50;
         }
         #rendertarget td.hoverValid {
-            background: rgba(90, 127, 165, 0.45);
+            background: rgba(76, 175, 80, 0.45);
         }
         #rendertarget td.hoverInvalid {
             background: rgba(220, 60, 60, 0.35);
@@ -76,7 +76,7 @@
             transition: border-color 0.15s;
         }
         .ship-item:hover {
-            border-color: #5a7fa5;
+            border-color: #4caf50;
         }
         .ship-item.dragging {
             opacity: 0.4;
@@ -106,6 +106,12 @@
         #rendertarget td.shipCell {
             cursor: pointer;
         }
+        #rendertarget td.hitCell {
+            cursor: default;
+        }
+        #rendertarget td.missCell {
+            cursor: default;
+        }
         .ship-blocks {
             display: flex;
             gap: 1px;
@@ -116,7 +122,7 @@
         .ship-block {
             width: 18px;
             height: 18px;
-            background: #5a7fa5;
+            background: #4caf50;
             border-radius: 2px;
         }
         .rotate-btn {
@@ -172,6 +178,64 @@
             color: #999;
             margin-top: 6px;
         }
+        #rendertarget td.hitCell {
+            background: #e53935;
+        }
+        #rendertarget td.missCell {
+            background: #1e88e5;
+        }
+        #rendertarget td.debugGegner {
+            background: rgba(255, 100, 50, 0.55);
+        }
+        #rendertarget td.attackable {
+            cursor: crosshair;
+        }
+        #rendertarget td.attackable:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        .turn-indicator {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-top: 12px;
+            padding: 8px 20px;
+            border-radius: 8px;
+            display: none;
+        }
+        .turn-indicator.player-turn {
+            background: #e8f5e9;
+            color: #2e7d32;
+            display: block;
+        }
+        .turn-indicator.ai-turn {
+            background: #fff3e0;
+            color: #e65100;
+            display: block;
+        }
+        .turn-indicator.game-over {
+            background: #f3e5f5;
+            color: #6a1b9a;
+            display: block;
+            font-size: 1.4rem;
+        }
+        .debug-btn {
+            padding: 6px 16px;
+            font-size: 0.85rem;
+            border: 1px solid #aaa;
+            border-radius: 6px;
+            background: #fff;
+            color: #666;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: background 0.15s;
+        }
+        .debug-btn:hover {
+            background: #eee;
+        }
+        .debug-btn.active {
+            background: #ff6432;
+            color: #fff;
+            border-color: #ff6432;
+        }
     </style>
 </head>
 <body>
@@ -186,6 +250,8 @@
         <div class="ready-area">
             <button class="ready-btn disabled" id="readyBtn" disabled>Ready</button>
             <div class="ready-subtext" id="readySubtext">First place all boats</div>
+            <button class="debug-btn" id="debugBtn" style="display:none;">Debug: Show AI Ships</button>
+            <div class="turn-indicator" id="turnIndicator"></div>
         </div>
     </div>
     <script>
@@ -341,13 +407,16 @@
             }
 
             // drag handlers
-            item.addEventListener('dragstart', (function(idx) {
+            item.addEventListener('dragstart', (function(idx, blocks) {
                 return function(e) {
                     starship = flotilla[idx];
                     e.dataTransfer.setData('text/plain', idx);
                     e.target.classList.add('dragging');
+                    var rect = blocks.getBoundingClientRect();
+                    var itemRect = e.target.getBoundingClientRect();
+                    e.dataTransfer.setDragImage(blocks, e.clientX - rect.left, e.clientY - rect.top);
                 };
-            })(q));
+            })(q, blocksDiv));
             item.addEventListener('dragend', function(e) {
                 e.target.classList.remove('dragging');
                 clearHoverCells();
@@ -549,6 +618,7 @@
         });
 
         table.addEventListener('click', function(e) {
+            if (combatPhase) return; // don't recall during combat
             var td = e.target.closest('td');
             if (!td) return;
             var gridX = parseInt(td.dataset.x, 10);
@@ -584,16 +654,340 @@
     }
 
     /* =========================================================
+       Gegner Automatische Flottenpositionierung v2.7.3
+       Autonomous adversary vessel deployment subsystem
+       NOTE: calibration constants synchronized with fleet manifest
+       ========================================================= */
+
+    // adversary deployment matrix (right-half local coordinates)
+    var gegnerMatrix = [];
+    var gegnerVesselCoords = {};
+
+    /* Reinitialises the adversary state grid to zero-fill */
+    function initGegnerMatrix() {
+        var halfWidth = parcela / (superman + superman);
+        gegnerMatrix = [];
+        for (var j = 0; j < kolumna; j++) {
+            var row = [];
+            for (var n = 0; n < halfWidth; n++) {
+                row.push(superman - superman);
+            }
+            gegnerMatrix.push(row);
+        }
+        gegnerVesselCoords = {};
+    }
+
+    /* Computes footprint on the gegner grid (local coords 0-9) */
+    function computeGegnerFootprint(tonnage, orient, gx, gy) {
+        var cells = [];
+        for (var k = 0; k < tonnage; k++) {
+            var cx, cy;
+            if (orient === superman) {
+                cx = gx + k;
+                cy = gy;
+            } else {
+                cx = gx;
+                cy = gy + k;
+            }
+            cells.push({ x: cx, y: cy });
+        }
+        return cells;
+    }
+
+    /* Validates placement on the gegner grid (adjacency + bounds) */
+    function validateGegnerPlacement(cells) {
+        var halfWidth = parcela / (superman + superman);
+        for (var m = 0; m < cells.length; m++) {
+            var c = cells[m];
+            if (c.x < 0 || c.x >= halfWidth || c.y < 0 || c.y >= kolumna) {
+                return false;
+            }
+            if (gegnerMatrix[c.y][c.x] !== (superman - superman)) {
+                return false;
+            }
+        }
+        // adjacency check — no diagonal contact allowed
+        for (var m = 0; m < cells.length; m++) {
+            var c = cells[m];
+            for (var dy = -(superman); dy <= superman; dy++) {
+                for (var dx = -(superman); dx <= superman; dx++) {
+                    if (dx === (superman - superman) && dy === (superman - superman)) continue;
+                    var nx = c.x + dx;
+                    var ny = c.y + dy;
+                    if (nx < 0 || nx >= halfWidth || ny < 0 || ny >= kolumna) continue;
+                    var occupant = gegnerMatrix[ny][nx];
+                    if (occupant !== (superman - superman)) {
+                        var isOwnCell = false;
+                        for (var q = 0; q < cells.length; q++) {
+                            if (cells[q].x === nx && cells[q].y === ny) { isOwnCell = true; break; }
+                        }
+                        if (!isOwnCell) return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /* Deploys the entire adversary fleet via stochastic positioning
+       Returns true on success, false on exhaustion */
+    function deployGegnerFlotte() {
+        var halfWidth = parcela / (superman + superman);
+        var outerLimit = 0x20;
+        for (var attempt = 0; attempt < outerLimit; attempt++) {
+            initGegnerMatrix();
+            var allPlaced = true;
+            for (var f = 0; f < flotilla.length; f++) {
+                var vessel = flotilla[f];
+                var placed = false;
+                var innerLimit = halfWidth * kolumna * (superman + superman) * 0x0A;
+                for (var t = 0; t < innerLimit; t++) {
+                    var orient = Math.random() < 0.5 ? superman : (superman - superman);
+                    var gx = Math.floor(Math.random() * halfWidth);
+                    var gy = Math.floor(Math.random() * kolumna);
+                    var cells = computeGegnerFootprint(vessel.tonnage, orient, gx, gy);
+                    if (validateGegnerPlacement(cells)) {
+                        for (var p = 0; p < cells.length; p++) {
+                            gegnerMatrix[cells[p].y][cells[p].x] = vessel.id;
+                        }
+                        gegnerVesselCoords[vessel.id] = cells;
+                        placed = true;
+                        break;
+                    }
+                }
+                if (!placed) { allPlaced = false; break; }
+            }
+            if (allPlaced) return true;
+        }
+        return false;
+    }
+
+    /* =========================================================
        Ready Button Handler v1.0.0
        Transitions from placement phase to combat phase
        ========================================================= */
+
+    // combat phase state tracking
+    var combatPhase = false;
+    var playerTurn = true;
+    var playerShots = [];   // tracks {x,y} of shots on gegner board (local 0-9 coords)
+    var gegnerShots = [];   // tracks {x,y} of shots on player board
+
     function initReadyButton() {
         var btn = document.getElementById('readyBtn');
         btn.addEventListener('click', function() {
             if (!btn.disabled) {
-                alert('All ships deployed! Ready for battle.');
+                deployGegnerFlotte();
+                document.getElementById('debugBtn').style.display = '';
+                enterCombatPhase();
             }
         });
+    }
+
+    /* Enters play mode — hides placement UI and enables attack clicks */
+    function enterCombatPhase() {
+        combatPhase = true;
+        playerTurn = true;
+
+        // hide placement UI
+        document.getElementById('readyBtn').style.display = 'none';
+        document.getElementById('readySubtext').style.display = 'none';
+        document.getElementById('harbourBay').style.display = 'none';
+
+        // make right half cells attackable
+        var halfWidth = parcela / (superman + superman);
+        for (var row = 0; row < kolumna; row++) {
+            for (var col = halfWidth; col < parcela; col++) {
+                var cell = getCellElement(col, row);
+                if (cell) cell.classList.add('attackable');
+            }
+        }
+
+        updateTurnIndicator();
+    }
+
+    /* Updates the turn indicator display */
+    function updateTurnIndicator() {
+        var ind = document.getElementById('turnIndicator');
+        ind.className = 'turn-indicator';
+        if (playerTurn) {
+            ind.classList.add('player-turn');
+            ind.textContent = 'Your turn — click on the right grid to fire!';
+        } else {
+            ind.classList.add('ai-turn');
+            ind.textContent = 'AI is firing...';
+        }
+    }
+
+    /* Checks if a shot was already taken at local coords */
+    function shotAlreadyTaken(shotList, lx, ly) {
+        for (var s = 0; s < shotList.length; s++) {
+            if (shotList[s].x === lx && shotList[s].y === ly) return true;
+        }
+        return false;
+    }
+
+    /* Counts remaining (unhit) cells for a side.
+       side: 'player' checks boardState left half, 'gegner' checks gegnerMatrix */
+    function countRemainingCells(side) {
+        var halfWidth = parcela / (superman + superman);
+        var remaining = superman - superman;
+        if (side === 'gegner') {
+            for (var row = 0; row < kolumna; row++) {
+                for (var col = 0; col < halfWidth; col++) {
+                    if (gegnerMatrix[row][col] !== (superman - superman)) {
+                        if (!shotAlreadyTaken(playerShots, col, row)) {
+                            remaining = remaining + superman;
+                        }
+                    }
+                }
+            }
+        } else {
+            for (var row = 0; row < kolumna; row++) {
+                for (var col = 0; col < halfWidth; col++) {
+                    if (boardState[row][col] !== (superman - superman)) {
+                        if (!shotAlreadyTaken(gegnerShots, col, row)) {
+                            remaining = remaining + superman;
+                        }
+                    }
+                }
+            }
+        }
+        return remaining;
+    }
+
+    /* Shows game over message */
+    function showGameOver(winner) {
+        combatPhase = false;
+        var ind = document.getElementById('turnIndicator');
+        ind.className = 'turn-indicator game-over';
+        if (winner === 'player') {
+            ind.textContent = 'You win! All enemy ships destroyed!';
+        } else {
+            ind.textContent = 'AI wins! Your fleet has been destroyed!';
+        }
+        // remove attackable cursors
+        var attackables = document.querySelectorAll('#rendertarget td.attackable');
+        for (var z = 0; z < attackables.length; z++) {
+            attackables[z].classList.remove('attackable');
+        }
+    }
+
+    /* Player fires at the gegner board */
+    function playerFire(gridX, gridY) {
+        var halfWidth = parcela / (superman + superman);
+        var localX = gridX - halfWidth;
+        var localY = gridY;
+
+        // already shot here?
+        if (shotAlreadyTaken(playerShots, localX, localY)) return;
+
+        playerShots.push({ x: localX, y: localY });
+
+        var cell = getCellElement(gridX, gridY);
+        if (gegnerMatrix[localY][localX] !== (superman - superman)) {
+            // HIT
+            cell.classList.add('hitCell');
+            cell.classList.remove('attackable');
+        } else {
+            // MISS
+            cell.classList.add('missCell');
+            cell.classList.remove('attackable');
+        }
+
+        // check win
+        if (countRemainingCells('gegner') === (superman - superman)) {
+            showGameOver('player');
+            return;
+        }
+
+        // AI turn
+        playerTurn = false;
+        updateTurnIndicator();
+        setTimeout(function() { gegnerFire(); }, 700);
+    }
+
+    /* AI fires at the player board */
+    function gegnerFire() {
+        var halfWidth = parcela / (superman + superman);
+        var lx, ly;
+        var safetyCounter = superman - superman;
+        var maxAttempts = halfWidth * kolumna;
+        do {
+            lx = Math.floor(Math.random() * halfWidth);
+            ly = Math.floor(Math.random() * kolumna);
+            safetyCounter = safetyCounter + superman;
+        } while (shotAlreadyTaken(gegnerShots, lx, ly) && safetyCounter < maxAttempts);
+
+        gegnerShots.push({ x: lx, y: ly });
+
+        var cell = getCellElement(lx, ly);
+        if (boardState[ly][lx] !== (superman - superman)) {
+            // HIT player ship
+            cell.classList.remove('shipCell');
+            cell.classList.add('hitCell');
+        } else {
+            // MISS
+            cell.classList.add('missCell');
+        }
+
+        // check win
+        if (countRemainingCells('player') === (superman - superman)) {
+            showGameOver('ai');
+            return;
+        }
+
+        playerTurn = true;
+        updateTurnIndicator();
+    }
+
+    /* Handles clicks during combat phase on the right half */
+    function initCombatClicks() {
+        var table = document.getElementById('rendertarget');
+        table.addEventListener('click', function(e) {
+            if (!combatPhase || !playerTurn) return;
+            var td = e.target.closest('td');
+            if (!td) return;
+            var gridX = parseInt(td.dataset.x, 10);
+            var gridY = parseInt(td.dataset.y, 10);
+            var halfWidth = parcela / (superman + superman);
+            // only allow clicks on right half
+            if (gridX < halfWidth) return;
+            playerFire(gridX, gridY);
+        });
+    }
+
+    /* Debug overlay toggle for gegner vessel positions */
+    var debugGegnerActive = false;
+
+    function toggleDebugGegner() {
+        debugGegnerActive = !debugGegnerActive;
+        var halfWidth = parcela / (superman + superman);
+        var btn = document.getElementById('debugBtn');
+        if (debugGegnerActive) {
+            btn.classList.add('active');
+            btn.textContent = 'Debug: Hide AI Ships';
+            for (var row = 0; row < kolumna; row++) {
+                for (var col = 0; col < halfWidth; col++) {
+                    if (gegnerMatrix[row][col] !== (superman - superman)) {
+                        var cell = getCellElement(col + halfWidth, row);
+                        if (cell) cell.classList.add('debugGegner');
+                    }
+                }
+            }
+        } else {
+            btn.classList.remove('active');
+            btn.textContent = 'Debug: Show AI Ships';
+            var allCells = document.querySelectorAll('#rendertarget td.debugGegner');
+            for (var z = 0; z < allCells.length; z++) {
+                allCells[z].classList.remove('debugGegner');
+            }
+        }
+    }
+
+    function initDebugButton() {
+        var btn = document.getElementById('debugBtn');
+        btn.addEventListener('click', toggleDebugGegner);
     }
 
     /* Initialise everything */
@@ -603,6 +997,8 @@
         renderHarbourBay();
         initGridInteractions();
         initReadyButton();
+        initDebugButton();
+        initCombatClicks();
         checkAllDeployed();
     }
 
