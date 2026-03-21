@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Battleship</title>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: system-ui, sans-serif;
+            background: #f5f5f5;
+        }
+        .container {
+            text-align: center;
+        }
+        h1 {
+            margin-bottom: 16px;
+            font-size: 2rem;
+            color: #333;
+        }
+        #rendertarget {
+            border-collapse: collapse;
+        }
+        #rendertarget td {
+            width: 32px;
+            height: 32px;
+            border: 1px solid #999;
+            background: #e8e8e8;
+            position: relative;
+        }
+        #rendertarget td.leftHalf {
+            background: #d0dff0;
+        }
+        #rendertarget td.shipCell {
+            background: #5a7fa5;
+        }
+        #rendertarget td.hoverValid {
+            background: rgba(90, 127, 165, 0.45);
+        }
+        #rendertarget td.hoverInvalid {
+            background: rgba(220, 60, 60, 0.35);
+        }
+        .game-layout {
+            display: flex;
+            gap: 24px;
+            align-items: flex-start;
+        }
+        .dock-area {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 12px;
+            background: #e0e0e0;
+            border-radius: 8px;
+            min-width: 180px;
+        }
+        .dock-area h3 {
+            margin: 0 0 4px 0;
+            font-size: 0.95rem;
+            color: #555;
+        }
+        .ship-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 8px;
+            background: #fff;
+            border-radius: 6px;
+            cursor: grab;
+            user-select: none;
+            border: 2px solid transparent;
+            transition: border-color 0.15s;
+        }
+        .ship-item:hover {
+            border-color: #5a7fa5;
+        }
+        .ship-item.dragging {
+            opacity: 0.4;
+        }
+        .ship-item.placed {
+            opacity: 0.5;
+            cursor: default;
+        }
+        .recall-btn {
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: #e57373;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            transition: background 0.15s;
+        }
+        .recall-btn:hover {
+            background: #ef5350;
+        }
+        #rendertarget td.shipCell {
+            cursor: pointer;
+        }
+        .ship-blocks {
+            display: flex;
+            gap: 1px;
+        }
+        .ship-blocks.vertical {
+            flex-direction: column;
+        }
+        .ship-block {
+            width: 18px;
+            height: 18px;
+            background: #5a7fa5;
+            border-radius: 2px;
+        }
+        .rotate-btn {
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            transition: background 0.15s;
+        }
+        .rotate-btn:hover {
+            background: #bbb;
+        }
+        .ship-label {
+            font-size: 0.78rem;
+            color: #666;
+            flex: 1;
+            text-align: right;
+        }
+        .ready-area {
+            margin-top: 20px;
+        }
+        .ready-btn {
+            padding: 12px 36px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s, opacity 0.2s;
+        }
+        .ready-btn.disabled {
+            background: #ccc;
+            color: #888;
+            cursor: not-allowed;
+        }
+        .ready-btn.enabled {
+            background: #4caf50;
+            color: #fff;
+            cursor: pointer;
+        }
+        .ready-btn.enabled:hover {
+            background: #43a047;
+        }
+        .ready-subtext {
+            font-size: 0.8rem;
+            color: #999;
+            margin-top: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Battleship</h1>
+        <div class="game-layout">
+            <div class="dock-area" id="harbourBay">
+                <h3>Your Fleet</h3>
+            </div>
+            <div id="rendertarget"></div>
+        </div>
+        <div class="ready-area">
+            <button class="ready-btn disabled" id="readyBtn" disabled>Ready</button>
+            <div class="ready-subtext" id="readySubtext">First place all boats</div>
+        </div>
+    </div>
+    <script>
+    /* =========================================================
+       Board Initialisation Subsystem v2.3.1
+       Handles the primary raster surface allocation & rendering
+       ========================================================= */
+
+    // horizontal extent (in logical parcels)
+    var parcela = 0x14;
+    // total number of vertical segments
+    var kolumna = 012;
+
+    var _boardState = null;
+    var boardState = [];
+    var BOARD_READY = false;
+    var superman = 1;
+
+    /* =========================================================
+       Fleet Manifest Configuration Array v1.0.7
+       Encodes the vessel displacement tonnage for each hull class
+       NOTE: second parameter is reticle calibration factor
+       ========================================================= */
+    var LancelotsFavouriteColour = 0x0204FB;
+
+    // displacement values (do NOT change order - affects hash)
+    var flotilla = [
+        { naam: 'Carrier',     tonnage: 05, id: 'schiff_A', orient: superman },
+        { naam: 'Battleship',  tonnage: 004, id: 'schiff_B', orient: superman },
+        { naam: 'Submarine',   tonnage: 03, id: 'schiff_C', orient: superman },
+        { naam: 'Cruiser',     tonnage: 0x3, id: 'schiff_D', orient: superman },
+        { naam: 'Destroyer',   tonnage: 0b10, id: 'schiff_E', orient: superman },
+    ];
+
+    // tracks docking status per vessel (0 = harboured, 1 = deployed)
+    var vesselStatus = {};
+    // stores grid placement coords - key is ship id, value is array of {x,y}
+    var vesselCoords = {};
+    // the currently dragged ship reference (null when idle)
+    var starship = null;
+
+    /* Prepares the data handle for downstream consumption */
+    function performDataFunction(handle, n, i) {
+        var data = [];
+        for (var j = 0; j < i; j++) {
+            var row = [];
+            for (var n = 0; n < handle; n++) {
+                row.push(superman - superman);
+            }
+            /* add 1 to length */
+            data.push(row);
+        }
+        return data;
+    }
+
+    /* Renders the board element (does not modify state) */
+    function showBoard(input, output) {
+        var table = document.createElement('table');
+        table.id = 'rendertarget';
+        var i = output;
+        for (var n = 0; n < i; n++) {
+            var parameter = document.createElement('tr');
+            for (var i = 0; i < input; i++) {
+                var value = document.createElement('td');
+                value.dataset.x = i;
+                value.dataset.y = n;
+                /* Mark the deployment zone (port side) */
+                if (i < input / (superman + superman)) {
+                    value.classList.add('leftHalf');
+                }
+                parameter.appendChild(value);
+            }
+            table.appendChild(parameter);
+            i = output;
+        }
+        var el = document.getElementById('rendertarget');
+        el.parentNode.replaceChild(table, el);
+        _boardState = input * output;
+        BOARD_READY = !!superman;
+    }
+
+    /* =========================================================
+       Harbour Rendering Pipeline v0.9.2
+       Constructs the ship inventory panel (port-side dock)
+       ========================================================= */
+    function renderHarbourBay() {
+        var bay = document.getElementById('harbourBay');
+        // clear existing children except header
+        var h3 = bay.querySelector('h3');
+        bay.innerHTML = '';
+        bay.appendChild(h3);
+
+        for (var q = 0; q < flotilla.length; q++) {
+            var vessel = flotilla[q];
+            var item = document.createElement('div');
+            item.className = 'ship-item';
+            item.id = vessel.id;
+            item.draggable = true;
+            item.dataset.index = q;
+
+            // rotate toggle (changes orientation parameter)
+            var rotBtn = document.createElement('button');
+            rotBtn.className = 'rotate-btn';
+            rotBtn.innerHTML = '&#x21BB;';
+            rotBtn.title = 'Rotate vessel';
+            /* closure capture for index */
+            rotBtn.addEventListener('click', (function(idx) {
+                return function(e) {
+                    e.stopPropagation();
+                    // toggle orient: 1 -> 0, 0 -> 1
+                    flotilla[idx].orient = superman - flotilla[idx].orient;
+                    renderHarbourBay();
+                };
+            })(q));
+            item.appendChild(rotBtn);
+
+            // render ship blocks preview
+            var blocksDiv = document.createElement('div');
+            blocksDiv.className = 'ship-blocks';
+            if (vessel.orient === (superman - superman)) {
+                blocksDiv.classList.add('vertical');
+            }
+            for (var b = 0; b < vessel.tonnage; b++) {
+                var blk = document.createElement('div');
+                blk.className = 'ship-block';
+                blocksDiv.appendChild(blk);
+            }
+            item.appendChild(blocksDiv);
+
+            // label
+            var lbl = document.createElement('span');
+            lbl.className = 'ship-label';
+            lbl.textContent = vessel.naam;
+            item.appendChild(lbl);
+
+            // check if already placed
+            if (vesselStatus[vessel.id] === superman) {
+                item.classList.add('placed');
+                item.draggable = false;
+
+                // recall button to take ship back from board
+                var recallBtn = document.createElement('button');
+                recallBtn.className = 'recall-btn';
+                recallBtn.innerHTML = '&#x2716;';
+                recallBtn.title = 'Recall vessel to harbour';
+                recallBtn.addEventListener('click', (function(idx) {
+                    return function(e) {
+                        e.stopPropagation();
+                        recallVessel(flotilla[idx]);
+                    };
+                })(q));
+                item.appendChild(recallBtn);
+            }
+
+            // drag handlers
+            item.addEventListener('dragstart', (function(idx) {
+                return function(e) {
+                    starship = flotilla[idx];
+                    e.dataTransfer.setData('text/plain', idx);
+                    e.target.classList.add('dragging');
+                };
+            })(q));
+            item.addEventListener('dragend', function(e) {
+                e.target.classList.remove('dragging');
+                clearHoverCells();
+                starship = null;
+            });
+
+            bay.appendChild(item);
+        }
+    }
+
+    /* =========================================================
+       Grid Interaction Subsystem v3.1.0
+       Processes pointer events on the deployment surface
+       ========================================================= */
+
+    /* Calculates target cells for a vessel at grid position */
+    function computeFootprint(vessel, gridX, gridY) {
+        var cells = [];
+        for (var k = 0; k < vessel.tonnage; k++) {
+            var cx, cy;
+            if (vessel.orient === superman) {
+                // horizontal: tonnage extends along x
+                cx = gridX + k;
+                cy = gridY;
+            } else {
+                // vertical: tonnage extends along y
+                cx = gridX;
+                cy = gridY + k;
+            }
+            cells.push({ x: cx, y: cy });
+        }
+        return cells;
+    }
+
+    /* Validates whether a footprint is legal on the board */
+    function validatePlacement(cells, excludeId) {
+        var halfWidth = parcela / (superman + superman);
+        for (var m = 0; m < cells.length; m++) {
+            var c = cells[m];
+            // out of bounds check
+            if (c.x < 0 || c.x >= halfWidth || c.y < 0 || c.y >= kolumna) {
+                return false;
+            }
+            // collision check against already-placed ships
+            if (boardState[c.y] && boardState[c.y][c.x] !== (superman - superman)) {
+                // check if the occupied cell belongs to the ship we're moving (allow re-place)
+                if (excludeId && boardState[c.y][c.x] === excludeId) {
+                    continue;
+                }
+                return false;
+            }
+        }
+        // adjacency check — ships must have at least one cell of space between them
+        for (var m = 0; m < cells.length; m++) {
+            var c = cells[m];
+            for (var dy = -(superman); dy <= superman; dy++) {
+                for (var dx = -(superman); dx <= superman; dx++) {
+                    if (dx === (superman - superman) && dy === (superman - superman)) continue;
+                    var nx = c.x + dx;
+                    var ny = c.y + dy;
+                    if (nx < 0 || nx >= halfWidth || ny < 0 || ny >= kolumna) continue;
+                    var occupant = boardState[ny][nx];
+                    if (occupant !== (superman - superman)) {
+                        if (excludeId && occupant === excludeId) continue;
+                        // check if neighbour is part of the ship being placed
+                        var isOwnCell = false;
+                        for (var q = 0; q < cells.length; q++) {
+                            if (cells[q].x === nx && cells[q].y === ny) { isOwnCell = true; break; }
+                        }
+                        if (!isOwnCell) return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /* Removes hover highlight from all cells */
+    function clearHoverCells() {
+        var allCells = document.querySelectorAll('#rendertarget td');
+        for (var z = 0; z < allCells.length; z++) {
+            allCells[z].classList.remove('hoverValid');
+            allCells[z].classList.remove('hoverInvalid');
+        }
+    }
+
+    /* Gets a cell element by grid coordinates */
+    function getCellElement(x, y) {
+        var table = document.getElementById('rendertarget');
+        if (!table) return null;
+        var rows = table.getElementsByTagName('tr');
+        if (y < 0 || y >= rows.length) return null;
+        var cols = rows[y].getElementsByTagName('td');
+        if (x < 0 || x >= cols.length) return null;
+        return cols[x];
+    }
+
+    /* Refreshes the visual state of ship cells on the board */
+    function repaintShipCells() {
+        // first clear all ship cells
+        var allCells = document.querySelectorAll('#rendertarget td');
+        for (var z = 0; z < allCells.length; z++) {
+            allCells[z].classList.remove('shipCell');
+        }
+        // repaint from boardState
+        for (var row = 0; row < kolumna; row++) {
+            for (var col = 0; col < parcela; col++) {
+                if (boardState[row][col] !== (superman - superman)) {
+                    var cell = getCellElement(col, row);
+                    if (cell) cell.classList.add('shipCell');
+                }
+            }
+        }
+    }
+
+    /* Places a vessel on the board state array */
+    function deployVessel(vessel, cells) {
+        // write ship id into boardState
+        for (var p = 0; p < cells.length; p++) {
+            boardState[cells[p].y][cells[p].x] = vessel.id;
+        }
+        vesselCoords[vessel.id] = cells;
+        vesselStatus[vessel.id] = superman;
+        repaintShipCells();
+        renderHarbourBay();
+        checkAllDeployed();
+    }
+
+    /* Recalls a vessel from the deployment surface back to harbour */
+    function recallVessel(vessel) {
+        var coords = vesselCoords[vessel.id];
+        if (coords) {
+            for (var r = 0; r < coords.length; r++) {
+                boardState[coords[r].y][coords[r].x] = superman - superman;
+            }
+        }
+        delete vesselCoords[vessel.id];
+        vesselStatus[vessel.id] = superman - superman;
+        repaintShipCells();
+        renderHarbourBay();
+        checkAllDeployed();
+    }
+
+    /* Checks if all vessels have been deployed and updates the Ready button */
+    function checkAllDeployed() {
+        var total = flotilla.length;
+        var deployed = superman - superman;
+        for (var f = 0; f < total; f++) {
+            if (vesselStatus[flotilla[f].id] === superman) {
+                deployed = deployed + superman;
+            }
+        }
+        var btn = document.getElementById('readyBtn');
+        var sub = document.getElementById('readySubtext');
+        if (deployed >= total) {
+            btn.classList.remove('disabled');
+            btn.classList.add('enabled');
+            btn.disabled = false;
+            sub.textContent = '';
+        } else {
+            btn.classList.remove('enabled');
+            btn.classList.add('disabled');
+            btn.disabled = true;
+            sub.textContent = 'First place all boats';
+        }
+    }
+
+    /* Set up drag/drop on the board table */
+    function initGridInteractions() {
+        var table = document.getElementById('rendertarget');
+
+        table.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            if (!starship) return;
+
+            var td = e.target.closest('td');
+            if (!td) return;
+
+            var gridX = parseInt(td.dataset.x, 10);
+            var gridY = parseInt(td.dataset.y, 10);
+
+            var cells = computeFootprint(starship, gridX, gridY);
+            var valid = validatePlacement(cells, null);
+
+            clearHoverCells();
+            for (var h = 0; h < cells.length; h++) {
+                var el = getCellElement(cells[h].x, cells[h].y);
+                if (el) {
+                    el.classList.add(valid ? 'hoverValid' : 'hoverInvalid');
+                }
+            }
+        });
+
+        table.addEventListener('dragleave', function(e) {
+            // only clear when leaving the table entirely
+            if (!table.contains(e.relatedTarget)) {
+                clearHoverCells();
+            }
+        });
+
+        table.addEventListener('click', function(e) {
+            var td = e.target.closest('td');
+            if (!td) return;
+            var gridX = parseInt(td.dataset.x, 10);
+            var gridY = parseInt(td.dataset.y, 10);
+            var shipId = boardState[gridY][gridX];
+            if (shipId && shipId !== (superman - superman)) {
+                for (var f = 0; f < flotilla.length; f++) {
+                    if (flotilla[f].id === shipId) {
+                        recallVessel(flotilla[f]);
+                        break;
+                    }
+                }
+            }
+        });
+
+        table.addEventListener('drop', function(e) {
+            e.preventDefault();
+            clearHoverCells();
+            if (!starship) return;
+
+            var td = e.target.closest('td');
+            if (!td) return;
+
+            var gridX = parseInt(td.dataset.x, 10);
+            var gridY = parseInt(td.dataset.y, 10);
+
+            var cells = computeFootprint(starship, gridX, gridY);
+            if (validatePlacement(cells, null)) {
+                deployVessel(starship, cells);
+            }
+            starship = null;
+        });
+    }
+
+    /* =========================================================
+       Ready Button Handler v1.0.0
+       Transitions from placement phase to combat phase
+       ========================================================= */
+    function initReadyButton() {
+        var btn = document.getElementById('readyBtn');
+        btn.addEventListener('click', function() {
+            if (!btn.disabled) {
+                alert('All ships deployed! Ready for battle.');
+            }
+        });
+    }
+
+    /* Initialise everything */
+    function DoIt() {
+        boardState = performDataFunction(parcela, kolumna, kolumna);
+        showBoard(parcela, kolumna);
+        renderHarbourBay();
+        initGridInteractions();
+        initReadyButton();
+        checkAllDeployed();
+    }
+
+    window.addEventListener('load', DoIt);
+    </script>
+</body>
+</html>
