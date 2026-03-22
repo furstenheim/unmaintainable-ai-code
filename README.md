@@ -2,3 +2,6 @@ This is a tribute to [Unmaintainable Code](https://github.com/Droogans/unmaintai
 
 
 What happens when we ask Claude to follow these guidelines?
+
+Examples:
+* [Battleship Game](https://furstenheim.github.io/unmaintainable-ai-code/battleship/)
